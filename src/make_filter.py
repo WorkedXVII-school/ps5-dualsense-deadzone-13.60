@@ -32,6 +32,8 @@ for kind, count in [('home', 2), ('game', 5)]:
     header += 'static const unsigned ' + kind + '_entries[] = {' + ','.join(str(symbols[kind + '_entry' + str(i)]) for i in range(count)) + '};\n'
     header += '#define ' + prefix + '_CONFIG_OFFSET ' + str(symbols[kind + '_config']) + '\n'
     header += 'static const unsigned ' + kind + '_fields[] = {' + ','.join(str(symbols[kind + '_' + field]) for field in fields) + '};\n'
+    if kind == 'game':
+        header += '#define GAME_SWAP_OFFSET ' + str(symbols['game_swap']) + '\n'
     path = out / f'{kind}-blob.h'
     with path.open('x') as stream:
         stream.write(header)

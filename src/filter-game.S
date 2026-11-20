@@ -1,6 +1,6 @@
 .intel_syntax noprefix
 .text
-.global game_blob, game_blob_end, game_l_threshold, game_l_n1x, game_l_n1y, game_l_n2x, game_l_n2y, game_r_threshold, game_r_n1x, game_r_n1y, game_r_n2x, game_r_n2y, game_config
+.global game_blob, game_blob_end, game_l_threshold, game_l_n1x, game_l_n1y, game_l_n2x, game_l_n2y, game_r_threshold, game_r_n1x, game_r_n1y, game_r_n2x, game_r_n2y, game_config, game_swap
 .global game_entry0, game_entry1, game_entry2, game_entry3, game_entry4
 .macro stick offset, p
     movzx edx, byte ptr [rbx+\offset]
@@ -74,11 +74,30 @@ batch:
     mov ecx, eax
 filter:
     shr r13d, 1
+    .byte 0x41,0xbb            # mov r11d, imm32  (swap flag, patched in place by the payload)
+game_swap:
+    .long 0
 next:
     cmp byte ptr [rbx+76], 1
     jne advance
     stick 4, game_l
     stick 6, game_r
+    # hide chord: L1 (0x400) + Touchpad (0x100000) both down -> clear both bits
+    mov edx, dword ptr [rbx]
+    mov edi, edx
+    and edi, 0x00100400
+    cmp edi, 0x00100400
+    jne 2f
+    and edx, 0xffeffbff
+    mov dword ptr [rbx], edx
+2:
+    # legacy sticks: swap left.x and right.x when the flag is set
+    test r11d, r11d
+    jz advance
+    mov r8b, byte ptr [rbx+4]
+    mov r9b, byte ptr [rbx+6]
+    mov byte ptr [rbx+4], r9b
+    mov byte ptr [rbx+6], r8b
 advance:
     add rbx, r13
     dec ecx

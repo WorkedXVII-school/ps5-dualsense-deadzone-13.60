@@ -116,11 +116,11 @@ static void state_reply(int fd) {
         "\"lx\":%u,\"ly\":%u,\"rx\":%u,\"ry\":%u,\"timestamp\":%llu,"
         "\"source\":\"%s\",\"gamePid\":%d,\"gameSupported\":%s,\"gameEnabled\":%s,"
         "\"gameRadius\":%d,\"gameAngle\":%d,\"gameWidth\":%d,"
-        "\"gameRightRadius\":%d,\"gameRightAngle\":%d,\"gameRightWidth\":%d,\"gameImports\":%d,\"gameError\":\"%s\",\"saved\":%s,\"saveError\":\"%s\"}",
+        "\"gameRightRadius\":%d,\"gameRightAngle\":%d,\"gameRightWidth\":%d,\"gameImports\":%d,\"gameError\":\"%s\",\"legacy\":%s,\"buttons\":%u,\"saved\":%s,\"saveError\":\"%s\"}",
         DZ_BUILD_ID,home_available?"true":"false",home_error,(unsigned)(fw>>24&0xff),(unsigned)(fw>>16&0xff),home.pid,home.enabled?"true":"false",hl->radius,hl->angle,hl->width,hr->radius,hr->angle,hr->width,input.connected?"true":"false",input.fresh?"true":"false",input.idle?"true":"false",
         input.lx,input.ly,input.rx,input.ry,(unsigned long long)input.timestamp,
         source,game.pid,game.supported?"true":"false",game.enabled?"true":"false",
-        gl->radius,gl->angle,gl->width,gr->radius,gr->angle,gr->width,game.imports,game.error,persisted?"true":"false",saved.error);
+        gl->radius,gl->angle,gl->width,gr->radius,gr->angle,gr->width,game.imports,game.error,game.swap?"true":"false",(unsigned)game.input.buttons,persisted?"true":"false",saved.error);
     if (length>0 && (size_t)length<sizeof(json)) reply(fd,200,"application/json",json,(size_t)length);
 }
 static int disable(void) {
@@ -182,6 +182,10 @@ static void serve(int fd) {
         }
         game_sync(&config,1);
         if (home_result) { json_error(fd,409,dz_error());return; }
+    } else if (!strcmp(request.path,"/api/legacy-on") && !request.length) {
+        if (game_set_swap(1)) { json_error(fd,409,"Legacy sticks need the game filter applied first");return; }
+    } else if (!strcmp(request.path,"/api/legacy-off") && !request.length) {
+        if (game_set_swap(0)) { json_error(fd,409,"Legacy sticks need the game filter applied first");return; }
     } else if (!strcmp(request.path, "/api/disable") && !request.length) {
         if (disable()) { json_error(fd, 409, dz_error()); return; }
     } else if (!strcmp(request.path,"/api/close") && !request.length) {
@@ -206,7 +210,8 @@ int main(void) {
         if (now<0) { perror("Monotonic clock unavailable");break; }
         if (now-last_tick>=1000) { follow_game();last_tick=now; }
         fd_set ready;FD_ZERO(&ready);FD_SET(listener,&ready);
-        struct timeval wait={1,0};
+        game_poll();
+        struct timeval wait={0,100000};
         int selected=select(listener+1,&ready,NULL,NULL,&wait);
         if (selected<0) { if (errno==EINTR) continue;break; }
         if (!selected) continue;

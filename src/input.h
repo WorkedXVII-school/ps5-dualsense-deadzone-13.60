@@ -9,7 +9,7 @@ struct dz_observation {
 static inline int dz_sample(struct dz_state *out, struct dz_observation *seen,
                             const unsigned char *data, uint64_t stamp, int64_t now) {
     out->lx=out->ly=out->rx=out->ry=128;
-    out->timestamp=0;out->connected=out->fresh=out->idle=0;
+    out->timestamp=0;out->buttons=0;out->connected=out->fresh=out->idle=0;
     if (now<0) { memset(seen,0,sizeof(*seen));return -1; }
     if (!data || data[76]!=1 || !stamp) { memset(seen,0,sizeof(*seen));return 0; }
     if (!seen->observed || stamp<seen->stamp || now<seen->changed || now<seen->motion) {
@@ -19,6 +19,7 @@ static inline int dz_sample(struct dz_state *out, struct dz_observation *seen,
     }
     if (data[4]!=128 || data[5]!=128 || data[6]!=128 || data[7]!=128) seen->motion=now;
     out->lx=data[4];out->ly=data[5];out->rx=data[6];out->ry=data[7];
+    memcpy(&out->buttons,data,4);
     out->timestamp=stamp;out->connected=1;
     out->fresh=seen->advanced && now-seen->changed<2000;
     out->idle=now-seen->motion>5000;

@@ -14,6 +14,7 @@
 #include "game-code.h"
 #include "functions.h"
 #include "clock.h"
+#include "chord.h"
 #include "input.h"
 #define MAX_IMPORTS 128
 static struct {
@@ -22,7 +23,9 @@ static struct {
     struct timeval started;
     uintptr_t pad, cave, funcs[DZ_PAD_FUNCS], slots[MAX_IMPORTS];
     unsigned char kinds[MAX_IMPORTS];
-    struct dz_observation observation;
+    struct dz_observation observation, chord_seen;
+    uint32_t swap;           /* legacy-sticks flag as last read from the stub */
+    struct dz_chord chord;
     int64_t retry;
     const char *error;
 } game;
@@ -54,11 +57,23 @@ static int current_game(struct timeval *started) {
     }
     free(data);return pid;
 }
+/* The swap flag is an imm32 inside the stub that the payload flips at run time,
+ * so it must not count when the blob is compared with the expected build:
+ * read it, zero it in a copy, and compare the copy. Only 0 and 1 are valid. */
+static int code_valid(const unsigned char *code,struct dz_config *config,uint32_t *swap) {
+    unsigned char normalized[sizeof(game_blob)];
+    memcpy(normalized,code,sizeof(normalized));
+    memcpy(swap,code+GAME_SWAP_OFFSET,4);
+    memset(normalized+GAME_SWAP_OFFSET,0,4);
+    if (*swap>1) return -1;
+    return game_code_config(normalized,game.cave,game.funcs,config);
+}
 static int validate(void) {
     unsigned char code[sizeof(game_blob)];
     if (read_at(game.cave,code,sizeof(code))) return fail("Cannot read game filter");
     struct dz_config config=dz_default;
-    int valid=!game_code_config(code,game.cave,game.funcs,&config),empty=1,originals=0,hooks=0;
+    uint32_t swap=0;
+    int valid=!code_valid(code,&config,&swap),empty=1,originals=0,hooks=0;
     for (size_t i=0;i<sizeof(code);i++) if (code[i]) empty=0;
     if (!valid && !empty) return fail("Another code occupies the game area");
     for (int i=0;i<game.count;i++) {
@@ -70,7 +85,7 @@ static int validate(void) {
         else return fail("Game reads modified by another tool");
     }
     if (!game.count || (originals!=game.count && hooks!=game.count)) return fail("Incomplete game filter");
-    game.enabled=hooks==game.count;game.config=valid?config:dz_default;
+    game.enabled=hooks==game.count;game.config=valid?config:dz_default;game.swap=valid?swap:0;
     return 0;
 }
 static int discover(void) {
@@ -182,7 +197,7 @@ static int ensure(void) {
     struct timeval started={0};int pid=current_game(&started);
     if (pid<0) return fail("Game identification unavailable or ambiguous");
     if (pid!=game.pid || started.tv_sec!=game.started.tv_sec || started.tv_usec!=game.started.tv_usec) {
-        memset(&game,0,sizeof(game));game.pid=pid;game.started=started;
+        memset(&game,0,sizeof(game));game.pid=pid;game.started=started;dz_chord_reset(&game.chord);
     }
     if (!pid) { game.error="";return 0; }
     if (!game.supported) {
@@ -201,13 +216,14 @@ static int apply(const struct dz_config *settings,int enabled) {
     unsigned char before_code[sizeof(game_blob)],code[sizeof(game_blob)];
     uintptr_t before[MAX_IMPORTS],functions[5];
     int result=-1,touched=0,existing=0;
+    uint32_t prior_swap=0;
     game.error="Cannot apply filter to game";
     if (read_at(game.cave,before_code,sizeof(before_code))) goto finish;
     for (int i=0;i<game.count;i++) if (read_at(game.slots[i],&before[i],8)) goto finish;
     for (int i=0;i<5;i++) functions[i]=game.funcs[i];
     if (game_build(code,game.cave,functions,settings)) goto finish;
     struct dz_config config;
-    existing=!game_code_config(before_code,game.cave,game.funcs,&config);
+    existing=!code_valid(before_code,&config,&prior_swap);
     if (enabled) {
         touched=1;
         if(existing) {
@@ -254,11 +270,34 @@ void game_tick(const struct dz_config *config,int enabled) {
 }
 void game_read(struct game_status *out) {
     memset(out,0,sizeof(*out));
-    out->pid=game.pid;out->supported=game.supported;out->enabled=game.enabled;out->config=game.config;out->imports=game.count;out->error=game.error?game.error:"";
+    out->pid=game.pid;out->supported=game.supported;out->enabled=game.enabled;out->config=game.config;out->imports=game.count;out->swap=(int)game.swap;out->error=game.error?game.error:"";
     if (!game.pid || !game.supported) return;
     uint64_t best=0;const unsigned char *sample=NULL;
     if (dz_pad_sample(game.pid,game.pad,&sample,&best)) { out->error="Cannot read game controller";return; }
     out->input=(struct dz_state){.pid=game.pid,.enabled=game.enabled,.config=game.config};
     if (dz_sample(&out->input,&game.observation,sample,best,dz_milliseconds()))
         out->error="Monotonic clock unavailable";
+}
+
+int game_set_swap(int on) {
+    if (on!=0 && on!=1) return -1;
+    /* ensure() re-validates the stub and the hooked imports just before the write. */
+    if (ensure() || !game.pid || !game.supported || !game.enabled) return fail("Game filter is not active");
+    if (game.swap==(uint32_t)on) return 0;
+    /* One byte: the flag is 0 or 1, so a single store flips it with no torn state. */
+    unsigned char value=(unsigned char)on;
+    if (checked_write(game.cave+GAME_SWAP_OFFSET,&value,1)) return fail("Cannot change legacy sticks");
+    if (validate()) return -1;
+    printf("[legacy] sticks %s\n",on?"swapped":"normal");
+    return 0;
+}
+void game_poll(void) {
+    if (!game.pid || !game.supported || !game.enabled) return;
+    int64_t now=dz_milliseconds();
+    if (now<0) return;
+    uint64_t stamp=0;const unsigned char *sample=NULL;
+    if (dz_pad_sample(game.pid,game.pad,&sample,&stamp)) { dz_chord_reset(&game.chord);return; }
+    struct dz_state input={.pid=game.pid};
+    if (dz_sample(&input,&game.chord_seen,sample,stamp,now)) return;
+    if (dz_chord_update(&game.chord,input.buttons,input.connected,now)) game_set_swap(!game.swap);
 }

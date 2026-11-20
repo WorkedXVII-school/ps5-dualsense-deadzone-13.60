@@ -7,6 +7,7 @@ struct dz_state {
     int pid, enabled, connected, fresh;
     unsigned char lx, ly, rx, ry;
     uint64_t timestamp, started;
+    uint32_t buttons; /* ScePadData.buttons of the sampled packet */
     struct dz_config config;
     int idle; /* 1 = no stick movement (all axes neutral) for over 5 s */
 };
